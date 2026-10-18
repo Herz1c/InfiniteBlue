@@ -1,0 +1,73 @@
+// Local verification harness (not part of our project): Apeiron's own perft vs a
+// legality-filtered perft, per ICN line on stdin. Usage: perft_icn <depth> [dump]
+use apeiron::game::GameState;
+use apeiron::moves::{Move, MoveList};
+use std::io::BufRead;
+use std::time::Instant;
+
+fn legal_moves(g: &mut GameState) -> Vec<Move> {
+    let mut pl = MoveList::new();
+    g.get_pseudo_legal_moves_into(&mut pl);
+    let mut out = Vec::new();
+    for m in pl {
+        let u = g.make_move(&m);
+        let illegal = g.is_move_illegal();
+        g.undo_move(&m, u);
+        if !illegal {
+            out.push(m);
+        }
+    }
+    out
+}
+
+fn perft_legal(g: &mut GameState, d: usize) -> u64 {
+    let ms = legal_moves(g);
+    if d == 1 {
+        return ms.len() as u64;
+    }
+    let mut n = 0;
+    for m in ms {
+        let u = g.make_move(&m);
+        n += perft_legal(g, d - 1);
+        g.undo_move(&m, u);
+    }
+    n
+}
+
+fn fmt(m: &Move) -> String {
+    let mut s = format!("{},{}>{},{}", m.from.x, m.from.y, m.to.x, m.to.y);
+    if let Some(p) = m.promotion {
+        s.push_str(&format!("={}", p.to_site_code()));
+    }
+    s
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let depth: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(3);
+    let dump = args.get(2).is_some_and(|s| s == "dump");
+    for line in std::io::stdin().lock().lines() {
+        let line = line.unwrap();
+        let icn = line.trim();
+        if icn.is_empty() || icn.starts_with('#') {
+            continue;
+        }
+        let mut g = GameState::new();
+        g.setup_position_from_icn(icn);
+        println!("ICN {icn}");
+        if dump {
+            let mut ms: Vec<String> = legal_moves(&mut g).iter().map(fmt).collect();
+            ms.sort();
+            println!("ROOT {} {}", ms.len(), ms.join(" "));
+        }
+        for d in 1..=depth {
+            let t = Instant::now();
+            let p = g.perft(d);
+            let tp = t.elapsed().as_millis();
+            let t = Instant::now();
+            let l = perft_legal(&mut g, d);
+            let tl = t.elapsed().as_millis();
+            println!("D{d} apeiron_perft={p} ({tp} ms) legal_perft={l} ({tl} ms)");
+        }
+    }
+}

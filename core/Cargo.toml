@@ -1,0 +1,28 @@
+[package]
+name = "icore"
+version = "0.1.0"
+edition = "2021"
+description = "Rules, move generation and network input for Classical infinite chess"
+
+[lib]
+name = "icore"
+path = "src/lib.rs"
+# rlib for the CLI and tests, cdylib for the Python module (maturin, feature "python")
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "icore"
+path = "src/main.rs"
+
+[features]
+python = ["dep:pyo3"]
+
+[dependencies]
+pyo3 = { version = "0.25", features = ["extension-module"], optional = true }
+
+[profile.release]
+opt-level = 3
+debug = 1
+
+[profile.test]
+opt-level = 3

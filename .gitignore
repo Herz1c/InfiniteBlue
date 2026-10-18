@@ -1,0 +1,10 @@
+# Clones of Apeiron and infinitechess.org, probes, benchmarks: reference only, never imported.
+ref/
+# Generated data: corpora, shards, match games, checkpoints.
+data/
+node_modules/
+target/
+__pycache__/
+*.pyc
+.venv/
+PROGRESS.md
