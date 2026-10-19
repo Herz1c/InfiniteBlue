@@ -8,7 +8,10 @@ RUN=~/data/runs/${RUN:-m2a}
 INTERVAL=${INTERVAL:-1800}
 grep -q '^## 12. Auto-snapshots' "$P" || printf '\n---\n\n## 12. Auto-snapshots (every 30 min, written by `tools/snapshot.sh`)\n\n| time | games | shards | train step | pos/s | last eval (step: top-1 / policy / value) | jobs running |\n|---|---|---|---|---|---|---|\n' >> "$P"
 trap "exit 0" INT TERM
-alive() { [ -f ~/jobs/$1.pid ] && kill -0 "$(cat ~/jobs/$1.pid)" 2>/dev/null; }
+# A pid file only counts if that pid is still the process we started: pids are reused (e.g. after a
+# WSL restart), so the process start time is saved next to the pid and compared.
+started_at() { sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20; }
+alive() { local f=~/jobs/$1; [ -f "$f.pid" ] && [ -n "$(started_at "$(cat "$f.pid")")" ] && [ "$(started_at "$(cat "$f.pid")")" = "$(cat "$f.start" 2>/dev/null)" ]; }
 while true; do
   games=$(wc -l < ~/data/apeiron/classical_d12.jsonl 2>/dev/null || echo 0)
   shards=$(ls ~/data/shards/d12 2>/dev/null | grep -c '\.npz$')

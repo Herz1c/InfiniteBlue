@@ -469,7 +469,7 @@ Running jobs (stop/resume any time, inside WSL): `bash tools/jobs.sh status`, `b
 - Tooling: data conversion and the loader.
 - Compute: about 2 days of CPU for labels, about 0.5 day of GPU.
 
-### M3 · MCTS beats Apeiron level 4 at > 55% (40–80 h)
+### M3 · MCTS beats Apeiron level 4 at > 55% (40–80 h) · **done 2026-10-19** (E7: 0.911 at 1 s, 0.940 at 5 s vs L4, 0 losses; see PROGRESS.md)
 
 1. `mcts.rs`: PUCT, virtual-loss batching through the D10 loop, tree reuse, exact terminals, fixed time per move.
 2. Tune cPUCT, FPU and root temperature by SPRT against our own previous version.
@@ -480,7 +480,7 @@ Running jobs (stop/resume any time, inside WSL): `bash tools/jobs.sh status`, `b
 - Tooling: the match glue.
 - Compute: about 1000 games × about 200 plies × 1 s, with 8 games sharing the GPU, is about 4 h per SPRT.
 
-### M4 · Self-play RL beats Apeiron v7.10.0 at full strength at > 55%, 5 s per move (120–250 h)
+### M4 · Self-play RL beats Apeiron v7.10.0 at full strength at > 55%, 5 s per move (120–250 h) · **in progress since 2026-10-19** (PROGRESS E12; jobs `rl`, `sp`, `ladder`)
 
 1. **KataGo-style loop:**
    - 512 parallel games;

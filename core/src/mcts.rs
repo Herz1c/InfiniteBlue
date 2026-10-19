@@ -37,6 +37,10 @@ pub struct Tree {
     /// A draw counts as -contempt for the side to move at the root (and +contempt for the
     /// opponent), so the engine avoids repetitions against weaker opponents. 0 = neutral.
     pub contempt: f32,
+    /// Self-play (PROGRESS E12, A6): when > 0, whoever moves into a draw scores it as -draw_penalty,
+    /// for both sides and independent of the root (so it stays valid when the tree is reused).
+    /// Replaces `contempt` for draws.
+    pub draw_penalty: f32,
     pub root: u32,
     // Per batch: (leaf, path of (node, move index), needs the net). A walk that ran into a leaf
     // already waiting is kept with needs=false: its virtual loss stays until the batch is backed
@@ -66,7 +70,7 @@ fn new_node(pos: Pos) -> Node {
 }
 
 pub fn new_tree(root: Pos) -> Tree {
-    Tree { nodes: vec![new_node(root)], c_puct: 2.0, fpu: 0.3, contempt: 0.0, root: 0, pending: Default::default() }
+    Tree { nodes: vec![new_node(root)], c_puct: 2.0, fpu: 0.3, contempt: 0.0, draw_penalty: 0.0, root: 0, pending: Default::default() }
 }
 
 /// Times the position occurred before (the encoder's repetition input).
@@ -118,7 +122,9 @@ pub fn select(tree: &mut Tree, n: usize) -> Vec<u32> {
         loop {
             let node = &tree.nodes[cur as usize];
             if let Some(mut v) = node.terminal {
-                if node.draw {
+                if node.draw && tree.draw_penalty > 0.0 {
+                    v = tree.draw_penalty; // side to move at the draw; the player who moved into it sees -penalty
+                } else if node.draw {
                     let root_side = node.pos.stm == tree.nodes[root as usize].pos.stm;
                     v = if root_side { -tree.contempt } else { tree.contempt };
                 }
@@ -194,10 +200,42 @@ pub fn expand_and_backup(tree: &mut Tree, priors: Vec<Vec<f32>>, values: Vec<f32
     }
 }
 
-/// Moves the root along `moves` (just played). False when the tree does not contain them, or
-/// when it has grown too large; then the caller starts a fresh tree.
+/// Keeps only the subtree under `root` (which becomes node 0) and frees everything else.
+/// Without this, every node of the game so far stays in memory (about 3 KB each), and four
+/// engines in a long game filled the 15 GB of WSL (E7b, 2026-10-19).
+fn compact(tree: &mut Tree, root: u32) {
+    let mut old: Vec<Option<Node>> = std::mem::take(&mut tree.nodes).into_iter().map(Some).collect();
+    let mut map = vec![NONE; old.len()];
+    let mut order = vec![root];
+    map[root as usize] = 0;
+    let mut i = 0;
+    while i < order.len() {
+        for &c in &old[order[i] as usize].as_ref().unwrap().child {
+            if c != NONE && map[c as usize] == NONE {
+                map[c as usize] = order.len() as u32;
+                order.push(c);
+            }
+        }
+        i += 1;
+    }
+    tree.nodes = order
+        .iter()
+        .map(|&n| {
+            let mut node = old[n as usize].take().unwrap();
+            for c in node.child.iter_mut().filter(|c| **c != NONE) {
+                *c = map[*c as usize];
+            }
+            node
+        })
+        .collect();
+    tree.root = 0;
+}
+
+/// Moves the root along `moves` (just played) and frees the rest of the tree. False when the
+/// tree does not contain them, or when the kept subtree is still too large; then the caller
+/// starts a fresh tree.
 pub fn advance(tree: &mut Tree, moves: &[Move]) -> bool {
-    if !tree.pending.is_empty() || tree.nodes.len() > 4_000_000 {
+    if !tree.pending.is_empty() {
         return false;
     }
     let mut r = tree.root;
@@ -212,8 +250,9 @@ pub fn advance(tree: &mut Tree, moves: &[Move]) -> bool {
         }
         r = node.child[i];
     }
-    tree.root = r;
-    true
+    compact(tree, r);
+    // A kept subtree this large would not fit four engines into memory; start fresh instead.
+    tree.nodes.len() <= 750_000
 }
 
 /// The most visited root move, its visit count, and its average value for the side to move.
@@ -222,4 +261,53 @@ pub fn best(tree: &Tree) -> Option<(Move, u32, f32)> {
     let i = (0..root.moves.len()).max_by_key(|&i| root.n[i])?;
     let q = if root.n[i] > 0 { root.w[i] / root.n[i] as f32 } else { 0.0 };
     Some((root.moves[i], root.n[i], q))
+}
+
+/// The root's candidate moves, their visit counts, and the root's average value (side to move).
+pub fn root_stats(tree: &Tree) -> (Vec<Move>, Vec<u32>, f32) {
+    let root = &tree.nodes[tree.root as usize];
+    let q = if root.visits > 0 { root.w.iter().sum::<f32>() / root.visits as f32 } else { 0.0 };
+    (root.moves.clone(), root.n.clone(), q)
+}
+
+/// Mixes Dirichlet(alpha) noise into the expanded root's priors: p = (1 - frac) p + frac noise.
+/// Self-play uses it so that full searches also try moves the net does not like yet (E12).
+pub fn add_root_noise(tree: &mut Tree, frac: f32, alpha: f32, seed: u64) {
+    let root = &mut tree.nodes[tree.root as usize];
+    if !root.expanded || root.prior.is_empty() {
+        return;
+    }
+    let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut uniform = move || {
+        rng ^= rng >> 12;
+        rng ^= rng << 25;
+        rng ^= rng >> 27;
+        ((rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+    };
+    let noise: Vec<f64> = (0..root.prior.len()).map(|_| gamma(alpha as f64, &mut uniform)).collect();
+    let sum: f64 = noise.iter().sum::<f64>().max(1e-12);
+    for (p, x) in root.prior.iter_mut().zip(noise) {
+        *p = (1.0 - frac) * *p + frac * (x / sum) as f32;
+    }
+}
+
+/// A Gamma(a, 1) sample (Marsaglia and Tsang; for a < 1 via Gamma(a + 1) * U^(1/a)).
+fn gamma(a: f64, uniform: &mut impl FnMut() -> f64) -> f64 {
+    if a < 1.0 {
+        return gamma(a + 1.0, uniform) * uniform().powf(1.0 / a);
+    }
+    let d = a - 1.0 / 3.0;
+    let c = 1.0 / (9.0 * d).sqrt();
+    loop {
+        // standard normal by Box-Muller
+        let x = (-2.0 * uniform().ln()).sqrt() * (2.0 * std::f64::consts::PI * uniform()).cos();
+        let v = (1.0 + c * x).powi(3);
+        if v <= 0.0 {
+            continue;
+        }
+        let u = uniform();
+        if u.ln() < 0.5 * x * x + d - d * v + d * v.ln() {
+            return d * v;
+        }
+    }
 }

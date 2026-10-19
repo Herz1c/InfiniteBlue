@@ -5,6 +5,8 @@
 //   icore positions       every position of each game, as a stand-alone ICN per line
 //   icore random <games> <max_plies> <seed>   random playouts from each input ICN, printed as
 //                         positions; slides go 1-8 steps or up to 2^62 (stress test for far moves)
+//   icore bench           times legal moves, candidates, game_end and the full encoder per position
+//   icore enccheck        the fast encoder must equal the frozen reference (encode_ref) byte for byte
 use icore::moves::{
     candidates, contains, legal, perft, slide_breakpoints, steps_to, CandidateRule, MoveSet, ROOT, TREE, UNBOUNDED,
 };
@@ -106,6 +108,62 @@ fn main() {
     let cmd = args.get(1).map(String::as_str).unwrap_or("");
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
+    if cmd == "enccheck" {
+        // Every position, mirrored and not, without a target and with each 7th candidate as the
+        // played move and a 64-candidate cap (the training path): all outputs must be identical.
+        let (mut n, mut bad) = (0usize, 0usize);
+        for line in stdin.lock().lines() {
+            let line = line.unwrap();
+            let Ok(pos) = parse_icn_and_play(line.trim()) else { continue };
+            let cands = candidates(&pos, &legal(&pos), &TREE);
+            let mut cases: Vec<(Option<Move>, bool, usize)> = vec![(None, false, usize::MAX), (None, true, usize::MAX)];
+            for (i, m) in cands.iter().enumerate().step_by(7).take(3) {
+                cases.push((Some(*m), i % 2 == 1, 64));
+            }
+            for (played, mirror, cap) in cases {
+                let a = icore::encode::encode(&pos, 1, played, mirror, cap);
+                let b = icore::encode_ref::encode(&pos, 1, played, mirror, cap);
+                n += 1;
+                if a.tokens != b.tokens || a.pairs != b.pairs || a.n != b.n || a.cands != b.cands || a.cand_rel != b.cand_rel || a.target != b.target {
+                    bad += 1;
+                    if bad <= 5 {
+                        let what: Vec<&str> = [("tokens", a.tokens != b.tokens), ("pairs", a.pairs != b.pairs), ("cands", a.cands != b.cands), ("cand_rel", a.cand_rel != b.cand_rel), ("target", a.target != b.target)]
+                            .iter().filter(|x| x.1).map(|x| x.0).collect();
+                        writeln!(out, "MISMATCH {:?} mirror={} played={:?}: {}", what, mirror, played.is_some(), line.trim()).unwrap();
+                    }
+                }
+            }
+        }
+        writeln!(out, "enccheck: {n} encodings compared, {bad} mismatches").unwrap();
+        return;
+    }
+    if cmd == "bench" {
+        let lines: Vec<String> = stdin.lock().lines().map(|l| l.unwrap()).filter(|l| !l.trim().is_empty()).collect();
+                // Where does per-leaf CPU time go in self-play? (PROGRESS A7)
+                let positions: Vec<Pos> = lines.iter().filter_map(|l| parse_icn_and_play(l).ok()).collect();
+                let reps = 3;
+                let time = |f: &dyn Fn(&Pos) -> usize| {
+                    let t = Instant::now();
+                    let mut acc = 0;
+                    for _ in 0..reps {
+                        for p in &positions {
+                            acc += f(p);
+                        }
+                    }
+                    (t.elapsed().as_secs_f64() * 1e6 / (reps * positions.len()) as f64, acc)
+                };
+                let (t_legal, _) = time(&|p| legal(p).singles.len());
+                let (t_cands, n_cands) = time(&|p| candidates(p, &legal(p), &TREE).len());
+                let (t_end, _) = time(&|p| game_end(p).is_some() as usize);
+                let (t_enc, _) = time(&|p| icore::encode::encode(p, 0, None, false, usize::MAX).n);
+                println!(
+                    "{} positions, {:.0} candidates on average: legal {:.0} us, legal+candidates {:.0} us, game_end {:.0} us, full encode {:.0} us",
+                    positions.len(),
+                    n_cands as f64 / (reps * positions.len()) as f64,
+                    t_legal, t_cands, t_end, t_enc
+                );
+                    return;
+    }
     for line in stdin.lock().lines() {
         let line = line.unwrap();
         let icn = line.trim();
