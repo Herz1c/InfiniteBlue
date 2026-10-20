@@ -14,7 +14,8 @@ NET=~/data/runs/m4/exhib_2000.pt
 stopped() { echo "[$(date +%H:%M)] stopped by request (resume: bash tools/jobs.sh start exhib)"; exit 130; }
 trap stopped INT TERM
 
-until [ "$(date +%H%M)" -ge 2000 ]; do sleep 60 & wait $!; done
+# Wait for 20:00 only on the first start; once the net is frozen, a resume continues at once.
+[ -s "$NET" ] || until [ "$(date +%H%M)" -ge 2000 ]; do sleep 60 & wait $!; done
 if [ ! -s "$NET" ]; then
   cp ~/data/runs/m4/current.pt "$NET.tmp" && mv "$NET.tmp" "$NET"
 fi
